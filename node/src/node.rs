@@ -74,24 +74,11 @@ pub async fn create() -> Result<(), Box<dyn Error>> {
         // Called when `floodsub` produces an event.
         fn inject_event(&mut self, message: FloodsubEvent) {
             if let FloodsubEvent::Message(message) = message {
-                let msg = String::from_utf8_lossy(&message.data);
-                if msg.contains("|") {
-                    let name = msg.split('|').collect::<Vec<&str>>()[0];
-                    let len = name.to_string().len();
-                    let (_begin, end) = msg.split_at(len + 1);
-
-                    println!(
-                        "Received: '{}' from {}",
-                        end,
-                        name
-                    );
-                } else {
-                    println!(
-                        "Received: '{:?}' from {:?}",
-                        msg,
-                        message.source
-                    );
-                }
+                println!(
+                    "Received: '{:?}' from {:?}",
+                    String::from_utf8_lossy(&message.data),
+                    message.source
+                );
             }
         }
     }
@@ -152,7 +139,7 @@ pub async fn create() -> Result<(), Box<dyn Error>> {
     loop {
         tokio::select! {
             line = stdin.next_line() => {
-                let line = format!("User|{}", line?.expect("stdin closed"));
+                let line = line?.expect("stdin closed");
                 swarm.behaviour_mut().floodsub.publish(floodsub_topic.clone(), line.as_bytes());
             }
             event = swarm.select_next_some() => {
