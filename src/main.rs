@@ -1,25 +1,41 @@
-use std::{env, io::Error};
+use std::{env, io::Error, io::Write, net::SocketAddr};
 
 #[macro_use]
 extern crate log;
-use env_logger::Env;
 
-use futures_util::{future, StreamExt, TryStreamExt};
+use futures_util::{future, StreamExt};
+use serde_json::Value;
 use tokio::net::{TcpListener, TcpStream};
+
+use colored::*;
+mod info;
+mod trafic;
+
+pub static mut USERS: Vec<FluxUser> = Vec::new();
+
+pub struct FluxUser {
+    name: String,
+    addr: SocketAddr
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     // Initialise the logging environment.
-    env_logger::init_from_env(Env::default().filter_or("MY_LOG_LEVEL", "info").write_style_or("MY_LOG_STYLE", "always"));
+    env_logger::builder()
+        .format(|buf, record| writeln!(buf, "{}", record.args()))
+        .filter_level(log::LevelFilter::Info)
+        .init();
 
     // Get the address from the args.
-    let addr = env::args().nth(1).unwrap_or_else(|| "192.168.178.53:25656".to_string());
+    let addr = env::args()
+        .nth(1)
+        .unwrap_or_else(|| "192.168.178.53:25656".to_string());
 
     // Start the server by creating the TcpListener.
-    info!("Starting the server...");
+    info::info("Startup".white(), String::from("Starting the server..."));
     let try_socket = TcpListener::bind(&addr).await;
     let listener = try_socket.expect("Failed to bind to address");
-    info!("Listening on: {}", addr);
+    info::info("Started".white(), format!("Listening on: {}", addr));
 
     // Keep waiting for new connections.
     while let Ok((stream, _)) = listener.accept().await {
@@ -30,24 +46,88 @@ async fn main() -> Result<(), Error> {
     Ok(())
 }
 
+/**
+ * Called when a new connection is made to the server.
+ */
 async fn accept_connection(stream: TcpStream) {
-    let addr = stream.peer_addr().expect("connected streams should have a peer address");
-    info!("[Connection] {}", addr);
+    let addr = stream
+        .peer_addr()
+        .expect("connected streams should have a peer address");
+    info::info("Connection".blue(), addr.to_string());
 
+    // Perform the websocket handshake.
     let ws_stream = tokio_tungstenite::accept_async(stream)
         .await
         .expect("Error during the websocket handshake occurred");
 
-    info!("[Handshaked] {}", addr);
+    info::info("Handshaked".green(), addr.to_string());
 
-    let (write, read) = ws_stream.split();
-    
-    // We should not forward messages other than text or binary.
-    read.try_filter(|msg| future::ready(msg.is_text() || msg.is_binary()))
-        .forward(write)
-        .await
-        .expect("Failed to forward messages")
+    // Split the streams write and read.
+    let (_, read) = ws_stream.split();
 
-    // todo : find way to know that a connection was lost.
-    // todo : do stuff with the incoming messages!
+    // Read incoming messages and process them:
+    read.for_each(move |message| {
+        let msg = message.unwrap().to_string();
+
+        // Check if the message isn't empty.
+        if msg.len() > 0 {
+            let data = serde_json::from_str::<Value>(msg.as_str());
+
+            // Check if the message is valid JSON:
+            match data {
+                Ok(json) => validate_json(json, addr),
+                Err(_) => info::user_info(
+                    addr,
+                    String::from("Invalid (Needs to be JSON)"),
+                    Color::Red
+                ),
+            };
+        }
+
+        future::ready(())
+    })
+    .await;
+
+    unsafe {
+        let index = USERS.iter().position(|user| user.addr == addr);
+
+        match index {
+            Some(i) => {
+                info::info("Disconnected".red(), String::clone(&USERS.get(i).expect("Can get user when disconnected").name));
+                USERS.remove(i);
+                ()
+            },
+            None => info::info("Hard Disconnect".red(), addr.to_string()),
+        }
+    }
+}
+
+/**
+ * Validates the json message and its contents.
+ */
+fn validate_json(json: Value, addr: SocketAddr) {
+
+    // Check if type exists on the message:
+    match &json["type"] {
+        Value::String(msg_type) => {
+
+            // Check which type this message is:
+            match msg_type.as_str() {
+                "login" => trafic::login(json, addr),
+
+                _ => info::user_info(
+                    addr,
+                    format!("Invalid (Unknown type \"{}\")", msg_type),
+                    Color::Red
+                ),
+            }
+        }
+
+        _ => info::user_info(
+            addr,
+            String::from("Invalid (Missing type)"),
+            Color::Red
+        ),
+    }
+
 }
