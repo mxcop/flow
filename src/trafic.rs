@@ -1,12 +1,12 @@
 use std::{net::SocketAddr, sync::Arc};
 use colored::*;
 use futures_util::{stream::SplitSink};
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::{net::TcpStream, sync::Mutex};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 use uuid::Uuid;
 
-use crate::{info, USERS, FluxUser, send::send_all};
+use crate::{info::{self, get_user}, USERS, FluxUser, send::{send_all, send_only}, util::trim_ends};
 
 /**
  * Handle the login message type.
@@ -21,15 +21,38 @@ pub async fn login(json: Value, addr: SocketAddr, socket: Arc<Mutex<SplitSink<We
                     addr.to_string().white(),
                     format!("@login {}", json["name"]),
                 );
-                USERS.push(FluxUser { id: Uuid::new_v4().to_string(), name: json["name"].to_string(), addr, socket });
+
+                // Send the new user an update with all online users:
+                let mut login_json = json!({
+                    "type": "login",
+                    "users": []
+                });
+
+                let users = login_json["users"].as_array_mut().unwrap();
+                for user in USERS.iter() {
+                    users.push(json!({
+                        "id": user.id,
+                        "name": user.name
+                    }));
+                }
+
+                // Add the new user to the system.
+                USERS.push(FluxUser { id: Uuid::new_v4().to_string(), name: trim_ends(json["name"].to_string()), addr, socket });
+                
+                send_only(addr, login_json.to_string()).await;
 
                 // Send an update to all other users that you've joined:
-                let index = USERS.iter().position(|user| user.addr == addr).expect("Can find user");
-                let user = USERS.get(index).expect("Can read user");
-                let usr_update = format!("{{\"type\":\"join\",\"user\":{{\"id\":\"{}\",\"name\":{}}}}}", user.id, user.name);
+                let user = get_user(addr);
+                let update_json = json!({
+                    "type": "join",
+                    "user": {
+                        "id": user.id,
+                        "name": user.name
+                    }
+                });
 
-                send_all(addr, usr_update).await;
-
+                send_all(addr, update_json.to_string()).await;
+                
             } else {
                 info::user_info(
                     addr,
@@ -72,13 +95,17 @@ pub async fn chat(json: Value, addr: SocketAddr) {
         );
 
         // Send the message to all other users:
-        unsafe {
-            let index = USERS.iter().position(|user| user.addr == addr).expect("Can find user");
-            let user = USERS.get(index).expect("Can read user");
-            let msg_data = format!("{{\"type\":\"chat\",\"sender\":{{\"id\":\"{}\",\"name\":{}}},\"content\":{}}}", user.id, user.name, json["content"].to_string());
+        let user = get_user(addr);
+        let msg_json = json!({
+            "type": "chat",
+            "sender": {
+                "id": user.id,
+                "name": user.name
+            },
+            "content": json["content"].to_string()
+        });
 
-            send_all(addr, msg_data).await;
-        }
+        send_all(addr, msg_json.to_string()).await;
 
     } else {
         info::user_info(

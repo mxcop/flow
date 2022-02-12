@@ -5,7 +5,7 @@ extern crate log;
 
 use futures_util::{StreamExt, stream::SplitSink};
 use send::send_all;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::{net::{TcpListener, TcpStream}, sync::Mutex};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
@@ -13,6 +13,7 @@ use colored::*;
 mod info;
 mod trafic;
 mod send;
+mod util;
 
 pub static mut USERS: Vec<FluxUser> = Vec::new();
 
@@ -118,9 +119,15 @@ async fn remove_user(addr: SocketAddr) {
 
                 // Send an update to all other users that a user has left:
                 let user = USERS.get(i).expect("Can read user");
-                let usr_update = format!("{{\"type\":\"leave\",\"user\":{{\"id\":\"{}\",\"name\":{}}}}}", user.id, user.name);
+                let update_json = json!({
+                    "type": "leave",
+                    "user": {
+                        "id": user.id,
+                        "name": user.name
+                    }
+                });
 
-                send_all(addr, usr_update).await;
+                send_all(addr, update_json.to_string()).await;
 
                 USERS.remove(i);
                 ()

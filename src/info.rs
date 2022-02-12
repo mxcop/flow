@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use colored::*;
 
-use crate::USERS;
+use crate::{USERS, FluxUser, util::trim_ends};
 
 /**
  * Custom info function to log server debug info.
@@ -20,7 +20,7 @@ pub fn user_info(addr: SocketAddr, details: String, color: colored::Color) {
 
         match index {
             Some(i) => {
-                info!("{}{}{} {}", "[".bright_black(), trim_str(&USERS.get(i).expect("Can get username in user_info method").name).color(color), "]".bright_black(), details);
+                info!("{}{}{} {}", "[".bright_black(), trim_ends(USERS.get(i).expect("Can get username in user_info method").name.clone()).color(color), "]".bright_black(), details);
                 ()
             },
             None => info!("{}{}{} {}", "[".bright_black(), addr.to_string().color(color), "]".bright_black(), details),
@@ -29,11 +29,17 @@ pub fn user_info(addr: SocketAddr, details: String, color: colored::Color) {
 }
 
 /**
- * Remove the first and last characters from a string.
+ * Get a user based on their socket address.
  */
-fn trim_str(value: &String) -> &str {
-    let mut chars = value.chars();
-    chars.next();
-    chars.next_back();
-    chars.as_str()
+pub fn get_user<'a>(addr: SocketAddr) -> &'a FluxUser {
+    unsafe {
+        let index = USERS.iter().position(|user| user.addr == addr);
+
+        match index {
+            Some(i) => {
+                USERS.get(i).unwrap()
+            },
+            None => panic!("Tried to get user who doesn't exist"),
+        }
+    }
 }
