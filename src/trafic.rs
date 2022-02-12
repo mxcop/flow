@@ -1,17 +1,18 @@
 use std::{net::SocketAddr, sync::Arc};
 use colored::*;
-use futures_util::{stream::SplitSink, SinkExt, FutureExt, future};
+use futures_util::{stream::SplitSink};
 use serde_json::Value;
-use tokio::{net::TcpStream, sync::{Mutex, MutexGuard}};
+use tokio::{net::TcpStream, sync::Mutex};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
+use uuid::Uuid;
 
-use crate::{info, USERS, FluxUser};
+use crate::{info, USERS, FluxUser, send::send_all};
 
 /**
  * Handle the login message type.
  * This will add the user to the users list.
  */
-pub fn login(json: Value, addr: SocketAddr, socket: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>) {
+pub async fn login(json: Value, addr: SocketAddr, socket: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>) {
     if json["name"] != Value::Null {
         unsafe {
             // Check if the user isn't already logged in.
@@ -20,7 +21,15 @@ pub fn login(json: Value, addr: SocketAddr, socket: Arc<Mutex<SplitSink<WebSocke
                     addr.to_string().white(),
                     format!("@login {}", json["name"]),
                 );
-                USERS.push(FluxUser { name: json["name"].to_string(), addr, socket });
+                USERS.push(FluxUser { id: Uuid::new_v4().to_string(), name: json["name"].to_string(), addr, socket });
+
+                // Send an update to all other users that you've joined:
+                let index = USERS.iter().position(|user| user.addr == addr).expect("Can find user");
+                let user = USERS.get(index).expect("Can read user");
+                let usr_update = format!("{{\"type\":\"join\",\"user\":{{\"id\":\"{}\",\"name\":{}}}}}", user.id, user.name);
+
+                send_all(addr, usr_update).await;
+
             } else {
                 info::user_info(
                     addr,
@@ -62,19 +71,13 @@ pub async fn chat(json: Value, addr: SocketAddr) {
             Color::Blue
         );
 
+        // Send the message to all other users:
         unsafe {
             let index = USERS.iter().position(|user| user.addr == addr).expect("Can find user");
-            let msg_data = format!("{{\"type\":\"chat\",\"sender\":\"{}\",\"content\":{}}}", USERS.get(index).expect("Can read user").name, json["content"].to_string());
+            let user = USERS.get(index).expect("Can read user");
+            let msg_data = format!("{{\"type\":\"chat\",\"sender\":{{\"id\":\"{}\",\"name\":{}}},\"content\":{}}}", user.id, user.name, json["content"].to_string());
 
-            // Send the message to all users except the one who send it.
-            for user in USERS.iter() {
-                if user.addr != addr {
-                    let _ = user.socket.lock().then(|mut socket| async {
-                        socket.send(Message::Text(String::clone(&msg_data))).await.expect("Can send message");
-                        future::ok::<MutexGuard<SplitSink<WebSocketStream<TcpStream>, Message>>, MutexGuard<SplitSink<WebSocketStream<TcpStream>, Message>>>(socket)
-                    }).await;
-                }
-            }
+            send_all(addr, msg_data).await;
         }
 
     } else {

@@ -4,6 +4,7 @@ use std::{env, io::Error, io::Write, net::SocketAddr, sync::Arc};
 extern crate log;
 
 use futures_util::{StreamExt, stream::SplitSink};
+use send::send_all;
 use serde_json::Value;
 use tokio::{net::{TcpListener, TcpStream}, sync::Mutex};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
@@ -11,10 +12,12 @@ use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 use colored::*;
 mod info;
 mod trafic;
+mod send;
 
 pub static mut USERS: Vec<FluxUser> = Vec::new();
 
 pub struct FluxUser {
+    id: String,
     name: String,
     addr: SocketAddr,
     socket: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>
@@ -90,22 +93,21 @@ async fn accept_connection(stream: TcpStream) {
                 }
             },
             Err(_) => {
-                unsafe {
-                    let index = USERS.iter().position(|user| user.addr == addr);
-            
-                    match index {
-                        Some(i) => {
-                            info::info("Disconnected".red(), String::clone(&USERS.get(i).expect("Can get user when disconnected").name));
-                            USERS.remove(i);
-                            ()
-                        },
-                        None => info::info("Hard Disconnect".red(), addr.to_string()),
-                    }
-                }
+                // Handle user disconnect:
+                remove_user(addr).await;
                 panic!("");
             }
         }
     }).await;
+
+    // Handle user disconnect:
+    remove_user(addr).await;
+}
+
+/**
+ * Remove a user by their socket address.
+ */
+async fn remove_user(addr: SocketAddr) {
 
     unsafe {
         let index = USERS.iter().position(|user| user.addr == addr);
@@ -113,6 +115,13 @@ async fn accept_connection(stream: TcpStream) {
         match index {
             Some(i) => {
                 info::info("Disconnected".red(), String::clone(&USERS.get(i).expect("Can get user when disconnected").name));
+
+                // Send an update to all other users that a user has left:
+                let user = USERS.get(i).expect("Can read user");
+                let usr_update = format!("{{\"type\":\"leave\",\"user\":{{\"id\":\"{}\",\"name\":{}}}}}", user.id, user.name);
+
+                send_all(addr, usr_update).await;
+
                 USERS.remove(i);
                 ()
             },
@@ -132,7 +141,7 @@ async fn validate_json(json: Value, addr: SocketAddr, socket: Arc<Mutex<SplitSin
 
             // Check which type this message is:
             match msg_type.as_str() {
-                "login" => trafic::login(json, addr, socket),
+                "login" => trafic::login(json, addr, socket).await,
                 "chat"  => trafic::chat(json, addr).await,
 
                 _ => info::user_info(
