@@ -61,15 +61,16 @@ pub async fn chat(json: Value, addr: SocketAddr) {
             json["content"].to_string(),
             Color::Blue
         );
+
         unsafe {
+            let index = USERS.iter().position(|user| user.addr == addr).expect("Can find user");
+            let msg_data = format!("{{\"type\":\"chat\",\"sender\":\"{}\",\"content\":{}}}", USERS.get(index).expect("Can read user").name, json["content"].to_string());
+
+            // Send the message to all users except the one who send it.
             for user in USERS.iter() {
                 if user.addr != addr {
-                    info::info(
-                        "SendMessage".white(),
-                        addr.to_string()
-                    );
                     let _ = user.socket.lock().then(|mut socket| async {
-                        socket.send(Message::Text(json["content"].to_string())).await.unwrap();
+                        socket.send(Message::Text(String::clone(&msg_data))).await.expect("Can send message");
                         future::ok::<MutexGuard<SplitSink<WebSocketStream<TcpStream>, Message>>, MutexGuard<SplitSink<WebSocketStream<TcpStream>, Message>>>(socket)
                     }).await;
                 }

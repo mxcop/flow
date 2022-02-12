@@ -70,22 +70,40 @@ async fn accept_connection(stream: TcpStream) {
 
     // Read incoming messages and process them:
     read.for_each(|message| async {
-        let msg = message.unwrap().to_string();
-        let writer_cl = Arc::clone(&writer);
+        match message {
+            Ok(msg) => {
+                let writer_cl = Arc::clone(&writer);
 
-        // Check if the message isn't empty.
-        if msg.len() > 0 {
-            let data = serde_json::from_str::<Value>(msg.as_str());
+                // Check if the message isn't empty.
+                if msg.len() > 0 {
+                    let data = serde_json::from_str::<Value>(msg.to_string().as_str());
 
-            // Check if the message is valid JSON:
-            match data {
-                Ok(json) => validate_json(json, addr, writer_cl).await,
-                Err(_) => info::user_info(
-                    addr,
-                    String::from("Invalid (Needs to be JSON)"),
-                    Color::Red
-                ),
-            };
+                    // Check if the message is valid JSON:
+                    match data {
+                        Ok(json) => validate_json(json, addr, writer_cl).await,
+                        Err(_) => info::user_info(
+                            addr,
+                            String::from("Invalid (Needs to be JSON)"),
+                            Color::Red
+                        ),
+                    };
+                }
+            },
+            Err(_) => {
+                unsafe {
+                    let index = USERS.iter().position(|user| user.addr == addr);
+            
+                    match index {
+                        Some(i) => {
+                            info::info("Disconnected".red(), String::clone(&USERS.get(i).expect("Can get user when disconnected").name));
+                            USERS.remove(i);
+                            ()
+                        },
+                        None => info::info("Hard Disconnect".red(), addr.to_string()),
+                    }
+                }
+                panic!("");
+            }
         }
     }).await;
 
