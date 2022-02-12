@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use colored::*;
 
-use crate::{USERS, FluxUser, util::trim_ends};
+use crate::{USERS, FluxUser};
 
 /**
  * Custom info function to log server debug info.
@@ -20,7 +20,7 @@ pub fn user_info(addr: SocketAddr, details: String, color: colored::Color) {
 
         match index {
             Some(i) => {
-                info!("{}{}{} {}", "[".bright_black(), trim_ends(USERS.get(i).expect("Can get username in user_info method").name.clone()).color(color), "]".bright_black(), details);
+                info!("{}{}{} {}", "[".bright_black(), USERS.get(i).expect("Can get username in user_info method").name.clone().color(color), "]".bright_black(), details);
                 ()
             },
             None => info!("{}{}{} {}", "[".bright_black(), addr.to_string().color(color), "]".bright_black(), details),

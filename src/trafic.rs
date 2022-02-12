@@ -102,7 +102,7 @@ pub async fn chat(json: Value, addr: SocketAddr) {
                 "id": user.id,
                 "name": user.name
             },
-            "content": json["content"].to_string()
+            "content": trim_ends(json["content"].to_string())
         });
 
         send_all(addr, msg_json.to_string()).await;
