@@ -3,7 +3,7 @@ use std::{env, io::Error, io::Write, net::SocketAddr, sync::Arc};
 #[macro_use]
 extern crate log;
 
-use futures_util::{future, StreamExt, stream::SplitSink};
+use futures_util::{StreamExt, stream::SplitSink};
 use serde_json::Value;
 use tokio::{net::{TcpListener, TcpStream}, sync::Mutex};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
@@ -69,8 +69,9 @@ async fn accept_connection(stream: TcpStream) {
     let writer = Arc::new(Mutex::new(write));
 
     // Read incoming messages and process them:
-    read.for_each(move |message| {
+    read.for_each(|message| async {
         let msg = message.unwrap().to_string();
+        let writer_cl = Arc::clone(&writer);
 
         // Check if the message isn't empty.
         if msg.len() > 0 {
@@ -78,7 +79,7 @@ async fn accept_connection(stream: TcpStream) {
 
             // Check if the message is valid JSON:
             match data {
-                Ok(json) => validate_json(json, addr, Arc::clone(&writer)),
+                Ok(json) => validate_json(json, addr, writer_cl).await,
                 Err(_) => info::user_info(
                     addr,
                     String::from("Invalid (Needs to be JSON)"),
@@ -86,10 +87,7 @@ async fn accept_connection(stream: TcpStream) {
                 ),
             };
         }
-
-        future::ready(())
-    })
-    .await;
+    }).await;
 
     unsafe {
         let index = USERS.iter().position(|user| user.addr == addr);
@@ -108,7 +106,7 @@ async fn accept_connection(stream: TcpStream) {
 /**
  * Validates the json message and its contents.
  */
-fn validate_json(json: Value, addr: SocketAddr, socket: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>) {
+async fn validate_json(json: Value, addr: SocketAddr, socket: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>) {
 
     // Check if type exists on the message:
     match &json["type"] {
@@ -117,7 +115,7 @@ fn validate_json(json: Value, addr: SocketAddr, socket: Arc<Mutex<SplitSink<WebS
             // Check which type this message is:
             match msg_type.as_str() {
                 "login" => trafic::login(json, addr, socket),
-                "chat"  => trafic::chat(json, addr),
+                "chat"  => trafic::chat(json, addr).await,
 
                 _ => info::user_info(
                     addr,

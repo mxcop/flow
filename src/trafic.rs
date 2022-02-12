@@ -1,8 +1,8 @@
 use std::{net::SocketAddr, sync::Arc};
 use colored::*;
-use futures_util::{stream::SplitSink, SinkExt};
+use futures_util::{stream::SplitSink, SinkExt, FutureExt, future};
 use serde_json::Value;
-use tokio::{net::TcpStream, sync::Mutex};
+use tokio::{net::TcpStream, sync::{Mutex, MutexGuard}};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 use crate::{info, USERS, FluxUser};
@@ -63,8 +63,16 @@ pub async fn chat(json: Value, addr: SocketAddr) {
         );
         unsafe {
             for user in USERS.iter() {
-                let mut socket = user.socket.lock().await;
-                socket.send(Message::Text(json["content"].to_string()));
+                if user.addr != addr {
+                    info::info(
+                        "SendMessage".white(),
+                        addr.to_string()
+                    );
+                    let _ = user.socket.lock().then(|mut socket| async {
+                        socket.send(Message::Text(json["content"].to_string())).await.unwrap();
+                        future::ok::<MutexGuard<SplitSink<WebSocketStream<TcpStream>, Message>>, MutexGuard<SplitSink<WebSocketStream<TcpStream>, Message>>>(socket)
+                    }).await;
+                }
             }
         }
 
