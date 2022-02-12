@@ -1,11 +1,12 @@
-use std::{env, io::Error, io::Write, net::SocketAddr};
+use std::{env, io::Error, io::Write, net::SocketAddr, sync::Arc};
 
 #[macro_use]
 extern crate log;
 
-use futures_util::{future, StreamExt};
+use futures_util::{future, StreamExt, stream::SplitSink};
 use serde_json::Value;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::{net::{TcpListener, TcpStream}, sync::Mutex};
+use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 use colored::*;
 mod info;
@@ -15,7 +16,8 @@ pub static mut USERS: Vec<FluxUser> = Vec::new();
 
 pub struct FluxUser {
     name: String,
-    addr: SocketAddr
+    addr: SocketAddr,
+    socket: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>
 }
 
 #[tokio::main]
@@ -63,7 +65,8 @@ async fn accept_connection(stream: TcpStream) {
     info::info("Handshaked".green(), addr.to_string());
 
     // Split the streams write and read.
-    let (_, read) = ws_stream.split();
+    let (write, read) = ws_stream.split();
+    let writer = Arc::new(Mutex::new(write));
 
     // Read incoming messages and process them:
     read.for_each(move |message| {
@@ -75,7 +78,7 @@ async fn accept_connection(stream: TcpStream) {
 
             // Check if the message is valid JSON:
             match data {
-                Ok(json) => validate_json(json, addr),
+                Ok(json) => validate_json(json, addr, Arc::clone(&writer)),
                 Err(_) => info::user_info(
                     addr,
                     String::from("Invalid (Needs to be JSON)"),
@@ -105,7 +108,7 @@ async fn accept_connection(stream: TcpStream) {
 /**
  * Validates the json message and its contents.
  */
-fn validate_json(json: Value, addr: SocketAddr) {
+fn validate_json(json: Value, addr: SocketAddr, socket: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>) {
 
     // Check if type exists on the message:
     match &json["type"] {
@@ -113,7 +116,8 @@ fn validate_json(json: Value, addr: SocketAddr) {
 
             // Check which type this message is:
             match msg_type.as_str() {
-                "login" => trafic::login(json, addr),
+                "login" => trafic::login(json, addr, socket),
+                "chat"  => trafic::chat(json, addr),
 
                 _ => info::user_info(
                     addr,

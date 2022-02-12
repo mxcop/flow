@@ -1,13 +1,17 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 use colored::*;
+use futures_util::{stream::SplitSink, SinkExt};
 use serde_json::Value;
+use tokio::{net::TcpStream, sync::Mutex};
+use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 use crate::{info, USERS, FluxUser};
 
 /**
  * Handle the login message type.
+ * This will add the user to the users list.
  */
-pub fn login(json: Value, addr: SocketAddr) {
+pub fn login(json: Value, addr: SocketAddr, socket: Arc<Mutex<SplitSink<WebSocketStream<TcpStream>, Message>>>) {
     if json["name"] != Value::Null {
         unsafe {
             // Check if the user isn't already logged in.
@@ -16,7 +20,7 @@ pub fn login(json: Value, addr: SocketAddr) {
                     addr.to_string().white(),
                     format!("@login {}", json["name"]),
                 );
-                USERS.push(FluxUser { name: json["name"].to_string(), addr });
+                USERS.push(FluxUser { name: json["name"].to_string(), addr, socket });
             } else {
                 info::user_info(
                     addr,
@@ -30,6 +34,44 @@ pub fn login(json: Value, addr: SocketAddr) {
         info::user_info(
             addr,
             String::from("Invalid (Login missing name)"),
+            Color::Red
+        );
+    }
+}
+
+/**
+ * Handle the chat message type.
+ * This will send the recieved message to all connected users.
+ */
+pub async fn chat(json: Value, addr: SocketAddr) {
+    // Check if the user is logged in:
+    unsafe {
+        if USERS.iter().all(|user| user.addr != addr) {
+            info::user_info(
+                addr,
+                String::from("Invalid (Need to be logged in to chat)"),
+                Color::Red
+            ); return;
+        }
+    }
+
+    if json["content"] != Value::Null {
+        info::user_info(
+            addr,
+            json["content"].to_string(),
+            Color::Blue
+        );
+        unsafe {
+            for user in USERS.iter() {
+                let mut socket = user.socket.lock().await;
+                socket.send(Message::Text(json["content"].to_string()));
+            }
+        }
+
+    } else {
+        info::user_info(
+            addr,
+            String::from("Invalid (Message missing content)"),
             Color::Red
         );
     }
