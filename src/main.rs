@@ -10,13 +10,23 @@ use tokio::{net::{TcpListener, TcpStream}, sync::Mutex};
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
 
 use colored::*;
+use utils::fuppercase;
 mod info;
 mod trafic;
 mod send;
-mod util;
+mod utils;
 
 pub static mut USERS: Vec<FluxUser> = Vec::new();
+pub static mut OFFERS: Vec<Offer> = Vec::new();
 
+#[derive(Debug)]
+pub struct Offer {
+    origin: String,
+    target: String,
+    id: String
+}
+
+#[derive(Debug)]
 pub struct FluxUser {
     id: String,
     name: String,
@@ -56,9 +66,8 @@ async fn main() -> Result<(), Error> {
  * Called when a new connection is made to the server.
  */
 async fn accept_connection(stream: TcpStream) {
-    let addr = stream
-        .peer_addr()
-        .expect("connected streams should have a peer address");
+    let addr = stream.peer_addr().expect("Failed to get user public ip");
+
     info::info("Connection".blue(), addr.to_string());
 
     // Perform the websocket handshake.
@@ -85,18 +94,17 @@ async fn accept_connection(stream: TcpStream) {
                     // Check if the message is valid JSON:
                     match data {
                         Ok(json) => validate_json(json, addr, writer_cl).await,
-                        Err(_) => info::user_info(
+                        Err(_) => info::user_err(
                             addr,
-                            String::from("Invalid (Needs to be JSON)"),
-                            Color::Red
+                            String::from("Json -> Invalid message format")
                         ),
                     };
                 }
             },
-            Err(_) => {
+            Err(err) => {
                 // Handle user disconnect:
                 remove_user(addr).await;
-                panic!("");
+                panic!("{}", err);
             }
         }
     }).await;
@@ -109,7 +117,6 @@ async fn accept_connection(stream: TcpStream) {
  * Remove a user by their socket address.
  */
 async fn remove_user(addr: SocketAddr) {
-
     unsafe {
         let index = USERS.iter().position(|user| user.addr == addr);
 
@@ -129,6 +136,9 @@ async fn remove_user(addr: SocketAddr) {
 
                 send_all(addr, update_json.to_string()).await;
 
+                // Cancel any connected offers:
+                OFFERS.retain(|offer| offer.origin != user.id && offer.target != user.id);
+
                 USERS.remove(i);
                 ()
             },
@@ -147,22 +157,30 @@ async fn validate_json(json: Value, addr: SocketAddr, socket: Arc<Mutex<SplitSin
         Value::String(msg_type) => {
 
             // Check which type this message is:
-            match msg_type.as_str() {
-                "login" => trafic::login(json, addr, socket).await,
-                "chat"  => trafic::chat(json, addr).await,
+            let err = match msg_type.as_str() {
+                "login" => trafic::login(json.clone(), addr, socket).await,
+                "chat"  => trafic::chat(json.clone(), addr).await,
+                "file"  => trafic::file(json.clone(), addr).await,
+                "request" => trafic::request(json.clone(), addr).await,     // Request for p2p
+                "offer" => trafic::offer(json.clone(), addr).await,         // P2P offer
+                "session" => trafic::session(json.clone(), addr).await,     // P2P session info
 
-                _ => info::user_info(
+                _ => Some(format!("Invalid (Unknown type \"{}\")", msg_type))
+            };
+
+            // Log the error if there is one:
+            match err {
+                Some(err) => info::user_err(
                     addr,
-                    format!("Invalid (Unknown type \"{}\")", msg_type),
-                    Color::Red
+                    format!("{} -> {}", fuppercase(msg_type), err)
                 ),
+                None => {}
             }
         }
 
-        _ => info::user_info(
+        _ => info::user_err(
             addr,
-            String::from("Invalid (Missing type)"),
-            Color::Red
+            String::from("Json -> Missing type field")
         ),
     }
 
